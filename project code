@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>URL Shortener — Local & Private</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="description" content="A single‑file URL shortener that runs entirely in your browser using localStorage. No server required." />
+</head>
+<body class="bg-gray-50 text-gray-800">
+  <div class="max-w-4xl mx-auto p-6">
+    <header class="flex items-center justify-between gap-4">
+      <h1 class="text-2xl md:text-3xl font-bold tracking-tight">🔗 URL Shortener</h1>
+      <div class="text-sm text-gray-500">Local & private (stored in your browser)</div>
+    </header>
+
+    <!-- Redirect Notice (hidden unless redirecting) -->
+    <div id="redirectNotice" class="hidden mt-6 p-4 rounded-2xl bg-yellow-50 border border-yellow-200">
+      <p class="font-medium">Redirecting…</p>
+      <p id="redirectMsg" class="text-sm text-gray-700 mt-1"></p>
+      <button id="cancelRedirect" class="mt-3 px-3 py-1.5 rounded-xl border border-gray-300 hover:bg-white">Stay here</button>
+    </div>
+
+    <!-- Card -->
+    <section class="mt-6 bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+      <div class="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
+        <div class="grid gap-3">
+          <label class="text-sm font-medium" for="longUrl">Long URL</label>
+          <input id="longUrl" type="url" placeholder="https://example.com/very/long/link…" class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <div class="grid md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-sm font-medium" for="customAlias">Custom alias (optional)</label>
+              <input id="customAlias" type="text" placeholder="e.g. my-note" class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label class="text-sm font-medium" for="expiryDays">Expiry (days, optional)</label>
+              <input id="expiryDays" type="number" min="1" step="1" placeholder="e.g. 30" class="w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          </div>
+          <p class="text-xs text-gray-500">Your short links will look like: <code class="bg-gray-100 px-1 rounded">{this-page}?go=&lt;code&gt;</code></p>
+        </div>
+        <button id="createBtn" class="h-[42px] md:h-[48px] px-4 md:px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-medium shadow">Create short link</button>
+      </div>
+      <p id="formError" class="mt-3 text-sm text-red-600 hidden"></p>
+      <div id="createdBox" class="mt-4 hidden">
+        <div class="flex items-center justify-between gap-3 p-3 border rounded-xl">
+          <div class="truncate"><span class="text-sm text-gray-500">New link:</span> <a id="createdLink" href="#" target="_blank" class="font-medium text-blue-700 hover:underline break-all"></a></div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button id="copyCreated" class="px-3 py-1.5 rounded-xl border hover:bg-gray-50">Copy</button>
+            <button id="openCreated" class="px-3 py-1.5 rounded-xl border hover:bg-gray-50">Open</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- List -->
+    <section class="mt-8">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">Your links</h2>
+        <div class="flex items-center gap-2">
+          <input id="search" placeholder="Search…" class="rounded-xl border border-gray-300 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <button id="exportBtn" class="px-3 py-1.5 rounded-xl border hover:bg-gray-50">Export</button>
+          <input id="importFile" type="file" accept="application/json" class="hidden" />
+          <button id="importBtn" class="px-3 py-1.5 rounded-xl border hover:bg-gray-50">Import</button>
+        </div>
+      </div>
+
+      <div class="mt-3 overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-600 border-b">
+              <th class="py-2 pr-3">Short</th>
+              <th class="py-2 pr-3">Destination</th>
+              <th class="py-2 pr-3">Clicks</th>
+              <th class="py-2 pr-3">Created</th>
+              <th class="py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="emptyState" class="hidden text-sm text-gray-500 mt-4">No links yet — create your first one above.</p>
+      </div>
+    </section>
+
+    <footer class="mt-10 text-xs text-gray-500">Built with ❤️. All data lives in your browser (localStorage). No servers involved.</footer>
+  </div>
+
+  <script>
+    // ---------- Utilities ----------
+    const STORAGE_KEY = 'urlshort.links.v1';
+    const now = () => Date.now();
+
+    function loadLinks() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { return []; }
+    }
+    function saveLinks(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); }
+
+    const base62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    function randomSlug(len = 6) {
+      const arr = new Uint8Array(len);
+      (self.crypto || window.crypto).getRandomValues(arr);
+      return Array.from(arr, b => base62[b % base62.length]).join('');
+    }
+    function isValidURL(u) {
+      try { new URL(u); return true; } catch { return false; }
+    }
+    function shortURL(slug) {
+      const { origin, pathname } = window.location;
+      return `${origin}${pathname}?go=${encodeURIComponent(slug)}`;
+    }
+    function formatDate(ts) { return new Date(ts).toLocaleString(); }
+
+    // ---------- Redirect handler ----------
+    (function handleRedirect() {
+      const params = new URLSearchParams(location.search);
+      const slug = params.get('go');
+      if (!slug) return;
+      const links = loadLinks();
+      const item = links.find(x => x.slug === slug);
+      const notice = document.getElementById('redirectNotice');
+      const msg = document.getElementById('redirectMsg');
+      const cancelBtn = document.getElementById('cancelRedirect');
+      notice.classList.remove('hidden');
+
+      if (!item) {
+        msg.textContent = `No link found for code "${slug}". You can create it below.`;
+        cancelBtn.textContent = 'OK';
+        cancelBtn.onclick = () => {
+          const url = new URL(location.href); url.searchParams.delete('go'); location.replace(url);
+        };
+        return;
+      }
+
+      const expired = item.expiresAt && now() > item.expiresAt;
+      if (expired) {
+        msg.textContent = `This link (code "${slug}") has expired.`;
+        cancelBtn.textContent = 'Back';
+        cancelBtn.onclick = () => { const url = new URL(location.href); url.searchParams.delete('go'); location.replace(url); };
+        return;
+      }
+
+      msg.innerHTML = `Going to <span class="break-all font-medium">${item.longUrl}</span> in 1.0s…`;
+      let redirected = false;
+      const doRedirect = () => {
+        if (redirected) return; redirected = true;
+        // increment click count and persist
+        item.clicks = (item.clicks || 0) + 1;
+        saveLinks(links);
+        location.replace(item.longUrl);
+      };
+      const t = setTimeout(doRedirect, 1000);
+      cancelBtn.onclick = () => { clearTimeout(t); msg.textContent = 'Redirect canceled.'; };
+    })();
+
+    // ---------- App state ----------
+    const state = { links: loadLinks(), filter: '' };
+
+    // ---------- DOM refs ----------
+    const longUrlEl = document.getElementById('longUrl');
+    const customAliasEl = document.getElementById('customAlias');
+    const expiryDaysEl = document.getElementById('expiryDays');
+    const createBtn = document.getElementById('createBtn');
+    const formError = document.getElementById('formError');
+    const createdBox = document.getElementById('createdBox');
+    const createdLink = document.getElementById('createdLink');
+    const copyCreated = document.getElementById('copyCreated');
+    const openCreated = document.getElementById('openCreated');
+    const rowsEl = document.getElementById('rows');
+    const emptyState = document.getElementById('emptyState');
+    const searchEl = document.getElementById('search');
+    const exportBtn = document.getElementById('exportBtn');
+    const importBtn = document.getElementById('importBtn');
+    const importFile = document.getElementById('importFile');
+
+    // ---------- Render ----------
+    function render() {
+      const q = state.filter.toLowerCase();
+      const list = state.links.filter(x =>
+        x.slug.toLowerCase().includes(q) || x.longUrl.toLowerCase().includes(q)
+      );
+
+      rowsEl.innerHTML = '';
+      if (list.length === 0) {
+        emptyState.classList.remove('hidden');
+      } else {
+        emptyState.classList.add('hidden');
+      }
+
+      for (const item of list) {
+        const tr = document.createElement('tr');
+        tr.className = 'border-b last:border-b-0';
+        tr.innerHTML = `
+          <td class="py-2 pr-3 align-top">
+            <a class="text-blue-700 hover:underline break-all" href="${shortURL(item.slug)}" target="_blank">${shortURL(item.slug)}</a>
+          </td>
+          <td class="py-2 pr-3 align-top break-all">${item.longUrl}</td>
+          <td class="py-2 pr-3 align-top">${item.clicks || 0}</td>
+          <td class="py-2 pr-3 align-top">${formatDate(item.createdAt)}</td>
+          <td class="py-2 align-top">
+            <div class="flex gap-2">
+              <button data-action="copy" data-slug="${item.slug}" class="px-2 py-1 rounded-lg border hover:bg-gray-50">Copy</button>
+              <button data-action="open" data-slug="${item.slug}" class="px-2 py-1 rounded-lg border hover:bg-gray-50">Open</button>
+              <button data-action="edit" data-slug="${item.slug}" class="px-2 py-1 rounded-lg border hover:bg-gray-50">Edit</button>
+              <button data-action="delete" data-slug="${item.slug}" class="px-2 py-1 rounded-lg border border-red-300 text-red-700 hover:bg-red-50">Delete</button>
+            </div>
+          </td>`;
+        rowsEl.appendChild(tr);
+      }
+    }
+
+    function persistAndRender() { saveLinks(state.links); render(); }
+
+    // ---------- Events ----------
+    createBtn.addEventListener('click', () => {
+      formError.classList.add('hidden');
+      const longUrl = longUrlEl.value.trim();
+      const custom = customAliasEl.value.trim();
+      const days = expiryDaysEl.value.trim();
+
+      if (!isValidURL(longUrl)) {
+        formError.textContent = 'Please enter a valid URL (include http:// or https://).';
+        formError.classList.remove('hidden');
+        return;
+      }
+
+      let slug = custom || randomSlug(6);
+      if (!/^[-\w]+$/.test(slug)) {
+        formError.textContent = 'Alias may contain only letters, numbers, dashes and underscores.';
+        formError.classList.remove('hidden');
+        return;
+      }
+
+      if (state.links.some(x => x.slug === slug)) {
+        formError.textContent = 'That alias is already in use. Try another.';
+        formError.classList.remove('hidden');
+        return;
+      }
+
+      const expiresAt = days ? (now() + Number(days) * 86400000) : null;
+      const item = { slug, longUrl, createdAt: now(), clicks: 0, expiresAt };
+      state.links.unshift(item);
+      persistAndRender();
+
+      const s = shortURL(slug);
+      createdLink.textContent = s; createdLink.href = s;
+      createdBox.classList.remove('hidden');
+      copyCreated.onclick = () => copyToClipboard(s);
+      openCreated.onclick = () => window.open(s, '_blank');
+
+      // reset inputs (keep long URL for convenience)
+      customAliasEl.value = '';
+      expiryDaysEl.value = '';
+    });
+
+    rowsEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const { action, slug } = btn.dataset;
+      const item = state.links.find(x => x.slug === slug);
+      if (!item) return;
+
+      if (action === 'copy') copyToClipboard(shortURL(slug));
+      else if (action === 'open') window.open(shortURL(slug), '_blank');
+      else if (action === 'delete') {
+        if (confirm(`Delete short link ${shortURL(slug)}?`)) {
+          state.links = state.links.filter(x => x.slug !== slug);
+          persistAndRender();
+        }
+      } else if (action === 'edit') {
+        const newUrl = prompt('Update destination URL:', item.longUrl);
+        if (newUrl && isValidURL(newUrl)) { item.longUrl = newUrl; persistAndRender(); }
+      }
+    });
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text)
+        .then(() => toast('Copied to clipboard'))
+        .catch(() => alert('Copy failed. You can select and copy manually.'));
+    }
+
+    searchEl.addEventListener('input', () => { state.filter = searchEl.value; render(); });
+
+    exportBtn.addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(state.links, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'urlshort-backup.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    importBtn.addEventListener('click', () => importFile.click());
+    importFile.addEventListener('change', async () => {
+      const file = importFile.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const arr = JSON.parse(text);
+        if (!Array.isArray(arr)) throw new Error('Invalid file');
+        // Merge, preferring current links for collisions
+        const map = new Map(state.links.map(x => [x.slug, x]));
+        for (const rec of arr) {
+          if (rec && rec.slug && rec.longUrl) {
+            if (!map.has(rec.slug)) map.set(rec.slug, rec);
+          }
+        }
+        state.links = Array.from(map.values()).sort((a,b) => b.createdAt - a.createdAt);
+        persistAndRender();
+        toast('Import complete');
+      } catch (err) { alert('Import failed: ' + err.message); }
+      importFile.value = '';
+    });
+
+    // ---------- Tiny toast ----------
+    let toastT = null;
+    function toast(msg) {
+      clearTimeout(toastT);
+      let el = document.getElementById('toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'toast';
+        el.className = 'fixed left-1/2 -translate-x-1/2 bottom-6 bg-black text-white text-sm px-3 py-2 rounded-xl shadow-lg opacity-0 transition-opacity';
+        document.body.appendChild(el);
+      }
+      el.textContent = msg; el.style.opacity = 1;
+      toastT = setTimeout(() => el.style.opacity = 0, 1200);
+    }
+
+    // Initial render
+    render();
+  </script>
+</body>
+</html>
